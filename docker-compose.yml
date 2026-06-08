@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  wackgrok:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8467:80"       # public HTTP — must point to *.wackgrok.paskhal.com via DNS wildcard
+      - "7070:7070"   # client control connections
+      - "7071:7071"   # client data connections
+    environment:
+      # Change this! Comma-separated list of allowed client tokens.
+      WACKGROK_TOKENS: "changeme,anothertoken"
+      WACKGROK_DOMAIN: "wackgrok.paskhal.com"
+      WACKGROK_CONTROL: ":7070"
+      WACKGROK_DATA: ":7071"
+      WACKGROK_HTTP: ":80"
