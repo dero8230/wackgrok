@@ -149,49 +149,60 @@ func (c *Client) connect(ctx context.Context) error {
 // the response is properly framed with Content-Length / chunked encoding, so
 // neither side needs a connection-close EOF to know when the body ends.
 func (c *Client) handleProxy(requestID string) {
-	// Dial server data port.
+	start := time.Now()
+	log.Printf("[proxy] req=%s  start", requestID)
+
+	// ---- Step 1: dial server data port ----
 	dataConn, err := net.Dial("tcp", c.cfg.DataAddr)
 	if err != nil {
-		log.Printf("[proxy] %s: dial data port: %v", requestID, err)
+		log.Printf("[proxy] req=%s  dial data port %s: %v", requestID, c.cfg.DataAddr, err)
 		return
 	}
 	defer dataConn.Close()
+	log.Printf("[proxy] req=%s  data conn open (%s)", requestID, time.Since(start))
 
-	// Identify this connection to the server.
+	// ---- Step 2: identify this connection to the server ----
 	if _, err := fmt.Fprintf(dataConn, "%s\n", requestID); err != nil {
-		log.Printf("[proxy] %s: send request id: %v", requestID, err)
+		log.Printf("[proxy] req=%s  send request id: %v", requestID, err)
 		return
 	}
+	log.Printf("[proxy] req=%s  request id sent (%s)", requestID, time.Since(start))
 
-	// Read the HTTP/1.x request that the server forwarded onto this connection.
+	// ---- Step 3: read the HTTP request the server wrote ----
 	req, err := http.ReadRequest(bufio.NewReader(dataConn))
 	if err != nil {
-		log.Printf("[proxy] %s: read request: %v", requestID, err)
+		log.Printf("[proxy] req=%s  ReadRequest failed: %v", requestID, err)
 		return
 	}
 	defer req.Body.Close()
+	log.Printf("[proxy] req=%s  read request: %s %s (%s)", requestID, req.Method, req.RequestURI, time.Since(start))
 
-	// Re-target the request at the local service.
+	// ---- Step 4: re-target at the local service ----
 	req.URL.Scheme = "http"
 	req.URL.Host = fmt.Sprintf("127.0.0.1:%d", c.cfg.LocalPort)
-	req.RequestURI = "" // must be empty for outbound client requests
+	req.RequestURI = "" // must be empty for outbound requests
 
-	// Execute against the local service.
+	// ---- Step 5: forward to local service ----
+	log.Printf("[proxy] req=%s  forwarding to localhost:%d…", requestID, c.cfg.LocalPort)
 	resp, err := http.DefaultTransport.RoundTrip(req)
 	if err != nil {
-		log.Printf("[proxy] %s: local :%d: %v", requestID, c.cfg.LocalPort, err)
+		log.Printf("[proxy] req=%s  local :%d error: %v", requestID, c.cfg.LocalPort, err)
 		msg := fmt.Sprintf("wackgrok: local service unreachable: %v", err)
 		fmt.Fprintf(dataConn, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
 			len(msg), msg)
 		return
 	}
 	defer resp.Body.Close()
+	log.Printf("[proxy] req=%s  local responded status=%d (%s)", requestID, resp.StatusCode, time.Since(start))
 
-	// Write the response back so the server can relay it to the browser.
+	// ---- Step 6: write response back to server ----
 	// resp.Write uses Content-Length / chunked framing — no EOF sentinel needed.
+	log.Printf("[proxy] req=%s  writing response to server…", requestID)
 	if err := resp.Write(dataConn); err != nil {
-		log.Printf("[proxy] %s: write response: %v", requestID, err)
+		log.Printf("[proxy] req=%s  write response failed: %v", requestID, err)
+		return
 	}
+	log.Printf("[proxy] req=%s  done (%s)", requestID, time.Since(start))
 }
 
 // ---- helpers ----

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"time"
 )
 
 // runHTTPServer starts the public-facing HTTP server that routes traffic to
@@ -34,6 +35,8 @@ func (s *Server) runHTTPServer(ctx context.Context) error {
 //  4. Writes the HTTP request to the data connection.
 //  5. Reads the HTTP response and writes it back to the caller.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
 	host := r.Host
 	// Strip port suffix if present (e.g. "myapp.example.com:8080" → "myapp.example.com").
 	if h, _, err := net.SplitHostPort(host); err == nil {
@@ -42,65 +45,74 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	subdomain := extractSubdomain(host, s.cfg.Domain)
 	if subdomain == "" {
-		http.Error(w, "wackgrok: no tunnel found for this host: " + host, http.StatusNotFound)
+		log.Printf("[http] no tunnel for host=%q", host)
+		http.Error(w, "wackgrok: no tunnel found for this host: "+host, http.StatusNotFound)
 		return
 	}
 
 	tunnel, ok := s.tunnels.Get(subdomain)
 	if !ok {
+		log.Printf("[http] tunnel %q not connected (host=%s)", subdomain, host)
 		http.Error(w, fmt.Sprintf("wackgrok: tunnel %q is not connected", subdomain), http.StatusNotFound)
 		return
 	}
 
 	requestID := randomID(16)
+	log.Printf("[http] req=%s  %s %s  tunnel=%s", requestID, r.Method, r.URL.RequestURI(), subdomain)
 
-	// Ask the client to open a data connection.
+	// ---- Step 1: signal client ----
 	if err := tunnel.sendProxy(requestID); err != nil {
-		log.Printf("[http] tunnel %s: sendProxy: %v", subdomain, err)
+		log.Printf("[http] req=%s  sendProxy failed: %v", requestID, err)
 		http.Error(w, "wackgrok: failed to signal client", http.StatusBadGateway)
 		return
 	}
+	log.Printf("[http] req=%s  proxy signal sent, waiting for data conn…", requestID)
 
-	// Wait for the client to dial back on the data port.
+	// ---- Step 2: wait for client data connection ----
 	dataConn, err := s.waitForConn(r.Context(), requestID)
 	if err != nil {
+		log.Printf("[http] req=%s  waitForConn failed after %s: %v", requestID, time.Since(start), err)
 		http.Error(w, "wackgrok: "+err.Error(), http.StatusGatewayTimeout)
 		return
 	}
 	defer dataConn.Close()
+	log.Printf("[http] req=%s  data conn established (%s)", requestID, time.Since(start))
 
-	// Force HTTP/1.1 keep-alive off so we get a clean EOF after the response.
+	// Force HTTP/1.1 keep-alive off so we get clean framing on the data conn.
 	r.Header.Set("Connection", "close")
 	r.Close = true
 
-	// Write the full HTTP request to the data connection.
+	// ---- Step 3: forward request to client ----
 	if err := r.Write(dataConn); err != nil {
-		log.Printf("[http] tunnel %s: write request: %v", subdomain, err)
+		log.Printf("[http] req=%s  write request failed: %v", requestID, err)
 		http.Error(w, "wackgrok: failed to forward request", http.StatusBadGateway)
 		return
 	}
+	log.Printf("[http] req=%s  request written to data conn (%s)", requestID, time.Since(start))
 
-	// Read the HTTP response from the data connection.
+	// ---- Step 4: read response from client ----
 	resp, err := http.ReadResponse(bufio.NewReader(dataConn), r)
 	if err != nil {
-		log.Printf("[http] tunnel %s: read response: %v", subdomain, err)
+		log.Printf("[http] req=%s  ReadResponse failed after %s: %v", requestID, time.Since(start), err)
 		http.Error(w, "wackgrok: failed to read response from client", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
+	log.Printf("[http] req=%s  got response status=%d (%s)", requestID, resp.StatusCode, time.Since(start))
 
-	// Copy response headers.
+	// ---- Step 5: relay response to browser ----
 	for key, vals := range resp.Header {
 		for _, v := range vals {
 			w.Header().Add(key, v)
 		}
 	}
-	// Ensure downstream connection is closed after each tunnelled response.
 	w.Header().Set("Connection", "close")
 	w.WriteHeader(resp.StatusCode)
 
-	// Stream response body.
-	if _, err := io.Copy(w, resp.Body); err != nil {
-		log.Printf("[http] tunnel %s: copy response body: %v", subdomain, err)
+	n, err := io.Copy(w, resp.Body)
+	if err != nil {
+		log.Printf("[http] req=%s  copy body failed after %d bytes: %v", requestID, n, err)
+		return
 	}
+	log.Printf("[http] req=%s  done — %d bytes in %s", requestID, n, time.Since(start))
 }
