@@ -42,7 +42,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	subdomain := extractSubdomain(host, s.cfg.Domain)
 	if subdomain == "" {
-		http.Error(w, "wackgrok: no tunnel found for this host", http.StatusNotFound)
+		http.Error(w, "wackgrok: no tunnel found for this host: " + host, http.StatusNotFound)
 		return
 	}
 
