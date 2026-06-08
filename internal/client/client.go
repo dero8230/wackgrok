@@ -72,6 +72,13 @@ func (c *Client) connect(ctx context.Context) error {
 	}
 	defer conn.Close()
 
+	// Close conn when ctx is cancelled so that any blocking read below
+	// returns immediately instead of hanging until the next packet.
+	go func() {
+		<-ctx.Done()
+		conn.Close()
+	}()
+
 	enc := protocol.NewEncoder(conn)
 	dec := protocol.NewDecoder(conn)
 
@@ -109,6 +116,9 @@ func (c *Client) connect(ctx context.Context) error {
 	for {
 		msg, err := dec.Recv()
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil // context cancelled — clean shutdown, don't reconnect
+			}
 			return fmt.Errorf("control read: %w", err)
 		}
 
