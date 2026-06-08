@@ -104,7 +104,7 @@ func (s *Server) handleControlConn(ctx context.Context, conn net.Conn) {
 	}
 	defer s.tunnels.Unregister(id)
 
-	url := fmt.Sprintf("http://%s.%s", id, s.cfg.Domain)
+	url := fmt.Sprintf("https://%s.%s", id, s.cfg.Domain)
 	if err := enc.Send(protocol.MsgTypeAuthOK, protocol.AuthResponse{ID: id, URL: url}); err != nil {
 		log.Printf("[control] %s: send auth_ok: %v", conn.RemoteAddr(), err)
 		return
