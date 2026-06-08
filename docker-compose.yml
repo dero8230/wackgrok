@@ -10,7 +10,7 @@ services:
       - "7071:7071"   # client data connections
     environment:
       # Change this! Comma-separated list of allowed client tokens.
-      WACKGROK_TOKENS: "changeme,anothertoken"
+      WACKGROK_TOKENS: "${WACKGROK_TOKENS}"
       WACKGROK_DOMAIN: "wackgrok.paskhal.com"
       WACKGROK_CONTROL: ":7070"
       WACKGROK_DATA: ":7071"
