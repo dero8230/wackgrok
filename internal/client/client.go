@@ -9,11 +9,12 @@
 package client
 
 import (
+	"bufio"
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"net"
+	"net/http"
 	"time"
 
 	"github.com/paskhal/wackgrok/internal/protocol"
@@ -142,9 +143,11 @@ func (c *Client) connect(ctx context.Context) error {
 	}
 }
 
-// handleProxy opens a data connection to the server, sends the request ID to
-// bind it to the in-flight HTTP request, then copies data bidirectionally
-// between the server and the local service.
+// handleProxy opens a data connection to the server, reads the HTTP request
+// the server wrote, forwards it to the local service, and writes the response
+// back. Using HTTP-level forwarding (rather than raw bidirectional copy) means
+// the response is properly framed with Content-Length / chunked encoding, so
+// neither side needs a connection-close EOF to know when the body ends.
 func (c *Client) handleProxy(requestID string) {
 	// Dial server data port.
 	dataConn, err := net.Dial("tcp", c.cfg.DataAddr)
@@ -160,28 +163,35 @@ func (c *Client) handleProxy(requestID string) {
 		return
 	}
 
-	// Dial the local service.
-	localConn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", c.cfg.LocalPort))
+	// Read the HTTP/1.x request that the server forwarded onto this connection.
+	req, err := http.ReadRequest(bufio.NewReader(dataConn))
 	if err != nil {
-		log.Printf("[proxy] %s: dial local :%d: %v", requestID, c.cfg.LocalPort, err)
+		log.Printf("[proxy] %s: read request: %v", requestID, err)
 		return
 	}
-	defer localConn.Close()
+	defer req.Body.Close()
 
-	// Bidirectional copy; finish as soon as one side closes.
-	done := make(chan struct{}, 2)
-	cp := func(dst, src net.Conn) {
-		io.Copy(dst, src)
-		// Signal EOF to the other direction.
-		if tc, ok := dst.(*net.TCPConn); ok {
-			tc.CloseWrite()
-		}
-		done <- struct{}{}
+	// Re-target the request at the local service.
+	req.URL.Scheme = "http"
+	req.URL.Host = fmt.Sprintf("127.0.0.1:%d", c.cfg.LocalPort)
+	req.RequestURI = "" // must be empty for outbound client requests
+
+	// Execute against the local service.
+	resp, err := http.DefaultTransport.RoundTrip(req)
+	if err != nil {
+		log.Printf("[proxy] %s: local :%d: %v", requestID, c.cfg.LocalPort, err)
+		msg := fmt.Sprintf("wackgrok: local service unreachable: %v", err)
+		fmt.Fprintf(dataConn, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+			len(msg), msg)
+		return
 	}
+	defer resp.Body.Close()
 
-	go cp(localConn, dataConn)
-	go cp(dataConn, localConn)
-	<-done
+	// Write the response back so the server can relay it to the browser.
+	// resp.Write uses Content-Length / chunked framing — no EOF sentinel needed.
+	if err := resp.Write(dataConn); err != nil {
+		log.Printf("[proxy] %s: write response: %v", requestID, err)
+	}
 }
 
 // ---- helpers ----
