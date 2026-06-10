@@ -13,7 +13,7 @@ import (
 )
 
 func main() {
-	server := flag.String("server", envOr("WACKGROK_SERVER", ""), "server address (host:port, e.g. wackgrok.paskhal.com:7070)")
+	server := flag.String("server", envOr("WACKGROK_SERVER", "wackgrok.paskhal.com:7070"), "server address (host:port, e.g. example.com:7070)")
 	dataAddr := flag.String("data", envOr("WACKGROK_DATA_ADDR", ""), "server data address (optional; derived from -server if omitted)")
 	token := flag.String("token", envOr("WACKGROK_TOKEN", ""), "authentication token")
 	port := flag.Int("port", 0, "local port to expose (required)")
@@ -30,8 +30,8 @@ func main() {
   -data      HOST:PORT   override data address   (optional)
 
 Examples:
-  wackgrok-client -server wackgrok.paskhal.com:7070 -token secret -port 3000
-  wackgrok-client -server wackgrok.paskhal.com:7070 -token secret -port 8080 -subdomain myapp
+  wackgrok-client -server example.com:7070 -token secret -port 3000
+  wackgrok-client -server example.com:7070 -token secret -port 8080 -subdomain myapp
 `)
 		os.Exit(1)
 	}

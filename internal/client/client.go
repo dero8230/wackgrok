@@ -179,7 +179,7 @@ func (c *Client) handleProxy(requestID string) {
 
 	// ---- Step 4: re-target at the local service ----
 	req.URL.Scheme = "http"
-	req.URL.Host = fmt.Sprintf("127.0.0.1:%d", c.cfg.LocalPort)
+	req.URL.Host = fmt.Sprintf("localhost:%d", c.cfg.LocalPort)
 	req.RequestURI = "" // must be empty for outbound requests
 
 	// ---- Step 5: forward to local service ----
